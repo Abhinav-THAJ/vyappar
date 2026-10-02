@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bella-books-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bella
+      POSTGRES_PASSWORD: bella
+      POSTGRES_DB: bella_books
+    ports:
+      - "5434:5432"
+    volumes:
+      - bella-books-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bella -d bella_books"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  bella-books-pgdata:

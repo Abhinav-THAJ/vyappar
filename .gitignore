@@ -1,0 +1,22 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+.env
+.env.local
+.env*.local
+*.log
+npm-debug.log*
+.DS_Store
+coverage/
+.vitest/
+test-results/
+playwright-report/
+prisma/dev.db*
+public/uploads/
+tsconfig.tsbuildinfo
+next-env.d.ts
+
+# Embedded Postgres data directory
+.postgres/
