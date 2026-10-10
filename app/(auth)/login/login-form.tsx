@@ -31,6 +31,12 @@ export function LoginForm({ next }: { next?: string }) {
     setFormError(null);
     const result = await loginAction(values);
 
+    // If Auth.js threw a NEXT_REDIRECT, the client action resolves to undefined.
+    if (!result) {
+      setFormError("Those credentials do not match an account. Please check your email and password.");
+      return;
+    }
+
     if (!result.ok) {
       setFormError(result.error);
       for (const [field, messages] of Object.entries(result.fieldErrors ?? {})) {

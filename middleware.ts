@@ -10,12 +10,17 @@ const PUBLIC_PREFIXES = [
   "/forgot-password",
   "/reset-password",
   "/api/auth",
+  "/api/clear-session",
 ];
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isPublic = PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
   const signedIn = Boolean(req.auth?.user);
+
+  if (pathname === "/signup") {
+    return NextResponse.redirect(new URL("/login", req.nextUrl.origin));
+  }
 
   if (!signedIn && !isPublic) {
     const url = new URL("/login", req.nextUrl.origin);

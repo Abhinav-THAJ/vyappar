@@ -28,6 +28,8 @@ export function SignupForm() {
     setFormError(null);
     const result = await signupAction(values);
 
+    if (!result) return;
+
     if (!result.ok) {
       setFormError(result.error);
       for (const [field, messages] of Object.entries(result.fieldErrors ?? {})) {

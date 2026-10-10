@@ -47,19 +47,38 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   const id = session?.user?.id;
   if (!id) return null;
 
-  const user = await prisma.user.findUnique({
-    where: { id },
-    select: { id: true, name: true, email: true, imageUrl: true },
-  });
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: { id: true, name: true, email: true, imageUrl: true },
+    });
 
-  return user ?? null;
+    return user ?? null;
+  } catch {
+    // DB unreachable — fail gracefully so middleware can redirect to login.
+    return null;
+  }
 }
 
 /** The signed-in user, or a redirect to the login page. */
 export async function requireUser(): Promise<SessionUser> {
-  const user = await getCurrentUser();
-  if (!user) redirect("/login");
-  return user;
+  const session = await auth();
+  const jwtHasId = Boolean(session?.user?.id);
+
+  // JWT says "logged in" but user doesn't exist in DB (e.g. after a DB reset).
+  // Sign out first to clear the stale JWT — otherwise the middleware bounces
+  // back and forth between /companies and /login forever.
+  if (jwtHasId) {
+    const user = await getCurrentUser();
+    if (!user) {
+      redirect("/api/auth/signout?callbackUrl=/login");
+    }
+    return user;
+  }
+
+  redirect("/login");
+  // TypeScript needs this; redirect() always throws.
+  throw new Error("unreachable");
 }
 
 /** Every company the user can open, newest activity first (ref-12). */

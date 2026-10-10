@@ -6,7 +6,7 @@ import { requireUser, setActiveCompany, setActiveFirm, requirePermission } from 
 import { createCompanySchema, firmSchema } from "@/lib/validators/company";
 import { provisionCompany, createNumberSequences } from "@/server/services/provisioning";
 import { normalizeName } from "@/lib/utils";
-import { runAction, BusinessError, type ActionResult } from "@/server/guards/action";
+import { runAction, runActionRaw, BusinessError, type ActionResult } from "@/server/guards/action";
 
 /** Run the onboarding wizard: create a company, its first firm and all masters. */
 export async function createCompanyAction(
@@ -127,4 +127,27 @@ async function makeDefault(
 ): Promise<void> {
   await tx.firm.updateMany({ where: { companyId }, data: { isDefault: false } });
   await tx.firm.update({ where: { id: firmId }, data: { isDefault: true } });
+}
+
+export async function deleteCompanyAction(companyId: string): Promise<ActionResult<{ ok: true }>> {
+  return runActionRaw(async () => {
+    const user = await requireUser();
+    
+    // Check if the user is the owner of the company
+    const membership = await prisma.companyMember.findFirst({
+      where: { userId: user.id, companyId: companyId, role: "OWNER" },
+    });
+
+    if (!membership) {
+      throw new BusinessError("Only the owner can delete the company.");
+    }
+
+    await prisma.company.update({
+      where: { id: companyId },
+      data: { deletedAt: new Date() },
+    });
+
+    revalidatePath("/companies");
+    return { ok: true } as const;
+  });
 }

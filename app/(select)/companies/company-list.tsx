@@ -12,6 +12,7 @@ import {
   Search,
   Upload,
   Users,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/display";
@@ -27,6 +28,7 @@ import { LogoMark, APP_NAME } from "@/components/brand/logo";
 import { formatActivity } from "@/lib/format/date";
 import { ROLE_LABELS } from "@/lib/auth/permissions";
 import { switchCompanyAction, signOutAction } from "@/server/actions/session";
+import { deleteCompanyAction } from "@/server/actions/company";
 
 import { cn, initials } from "@/lib/utils";
 import type { Role } from "@prisma/client";
@@ -87,6 +89,21 @@ export function CompanyList({
     router.refresh();
   }
 
+  async function openAndManageAccess(companyId: string) {
+    setOpening(companyId);
+    const result = await switchCompanyAction({ companyId });
+
+    if (!result.ok) {
+      setOpening(null);
+      toast.error(result.error);
+      router.refresh();
+      return;
+    }
+
+    router.push("/settings/users");
+    router.refresh();
+  }
+
   return (
     <div className="relative min-h-dvh overflow-hidden bg-[var(--surface-2)]">
       {/* Tiled watermark, drawn from our own mark */}
@@ -132,13 +149,14 @@ export function CompanyList({
                 </TabsTrigger>
               </TabsList>
 
-              <TabsContent value="mine" className="bg-[var(--surface)]">
+              <TabsContent value="mine" className="bg-[var(--surface)] text-[var(--text-primary)]">
                 <CompanyPane
                   caption="Below are the companies created by you"
                   rows={filter(mine)}
                   query={query}
                   opening={opening}
                   onOpen={open}
+                  onManageAccess={openAndManageAccess}
                   onRefresh={() => router.refresh()}
                   emptyTitle="No companies yet"
                   emptyDescription="Create your first company to start invoicing."
@@ -146,13 +164,14 @@ export function CompanyList({
                 />
               </TabsContent>
 
-              <TabsContent value="shared" className="bg-[var(--surface)]">
+              <TabsContent value="shared" className="bg-[var(--surface)] text-[var(--text-primary)]">
                 <CompanyPane
                   caption="Companies other people have shared with you"
                   rows={filter(shared)}
                   query={query}
                   opening={opening}
                   onOpen={open}
+                  onManageAccess={openAndManageAccess}
                   onRefresh={() => router.refresh()}
                   emptyTitle="Nothing shared with you yet"
                   emptyDescription="When someone invites you to their company, it appears here."
@@ -207,6 +226,7 @@ function CompanyPane({
   query,
   opening,
   onOpen,
+  onManageAccess,
   onRefresh,
   emptyTitle,
   emptyDescription,
@@ -217,6 +237,7 @@ function CompanyPane({
   query: string;
   opening: string | null;
   onOpen: (id: string) => void;
+  onManageAccess: (id: string) => void;
   onRefresh: () => void;
   emptyTitle: string;
   emptyDescription: string;
@@ -260,6 +281,7 @@ function CompanyPane({
               opening={opening === company.id}
               disabled={opening !== null && opening !== company.id}
               onOpen={() => onOpen(company.id)}
+              onManageAccess={() => onManageAccess(company.id)}
             />
           ))}
         </div>
@@ -273,21 +295,40 @@ function CompanyCard({
   opening,
   disabled,
   onOpen,
+  onManageAccess,
 }: {
   company: CompanyRow;
   opening: boolean;
   disabled: boolean;
   onOpen: () => void;
+  onManageAccess: () => void;
 }) {
   const activity = company.lastActivityAt
     ? `Last activity: ${formatActivity(company.lastActivityAt)}`
     : `Created ${formatActivity(company.createdAt)}`;
 
+  const [deleting, setDeleting] = React.useState(false);
+
+  async function handleDelete() {
+    if (!window.confirm(`Are you sure you want to delete ${company.name}? This action cannot be undone.`)) {
+      return;
+    }
+    setDeleting(true);
+    const result = await deleteCompanyAction(company.id);
+    if (!result.ok) {
+      toast.error(result.error);
+      setDeleting(false);
+    } else {
+      toast.success("Company deleted");
+    }
+  }
+
   return (
     <div
       className={cn(
         "flex flex-wrap items-center gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface)] p-4 transition-colors",
-        !disabled && "hover:border-[var(--border-strong)]",
+        !disabled && !deleting && "hover:border-[var(--border-strong)]",
+        deleting && "opacity-50 pointer-events-none"
       )}
     >
       <span
@@ -314,7 +355,7 @@ function CompanyCard({
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        <Button variant="outline" onClick={onOpen} loading={opening} disabled={disabled}>
+        <Button variant="outline" onClick={onOpen} loading={opening} disabled={disabled || deleting}>
           {opening ? "Opening…" : "Open"}
         </Button>
 
@@ -324,17 +365,24 @@ function CompanyCard({
               type="button"
               className="grid size-9 place-items-center rounded-lg text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-3)]"
               aria-label={`More options for ${company.name}`}
+              disabled={deleting}
             >
               <MoreVertical className="size-[18px]" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
             <DropdownMenuItem onSelect={onOpen}>Open</DropdownMenuItem>
-            <DropdownMenuItem disabled={!company.isOwner}>
+            <DropdownMenuItem disabled={!company.isOwner} onSelect={onManageAccess}>
               <Users />
               Manage access
             </DropdownMenuItem>
             <DropdownMenuItem disabled>Download backup</DropdownMenuItem>
+            {company.isOwner ? (
+              <DropdownMenuItem onSelect={handleDelete} className="text-[var(--color-negative)]">
+                <Trash2 className="text-[var(--color-negative)]" />
+                Delete company
+              </DropdownMenuItem>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

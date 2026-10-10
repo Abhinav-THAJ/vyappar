@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import { Toaster } from "sonner";
 import { APP_NAME } from "@/components/brand/logo";
+import NextTopLoader from "nextjs-toploader";
 import "./globals.css";
 
 const inter = Inter({
@@ -32,6 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en-IN" className={inter.variable} suppressHydrationWarning>
       <body>
+        <NextTopLoader color="#158073" showSpinner={false} />
         {children}
         <Toaster
           position="bottom-right"
