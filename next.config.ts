@@ -5,13 +5,13 @@ const nextConfig: NextConfig = {
   experimental: {
     // Invoice attachments and logo uploads go through server actions.
     serverActions: { bodySizeLimit: "8mb" },
-    outputFileTracingExcludes: {
-      "*": [
-        "node_modules/embedded-postgres/**/*",
-        "node_modules/@embedded-postgres/**/*"
-      ]
-    }
   },
+  outputFileTracingExcludes: {
+    "*": [
+      "node_modules/embedded-postgres/**/*",
+      "node_modules/@embedded-postgres/**/*"
+    ]
+  }
 };
 
 export default nextConfig;

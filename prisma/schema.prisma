@@ -1,6 +1,3 @@
-// Bella Books — GST billing & accounting
-// Two-level tenancy: Company (tenant) > Firm (business entity). See docs/DECISIONS.md D-20.
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -11,9 +8,623 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
+model User {
+  id             String               @id @default(cuid())
+  name           String
+  email          String               @unique
+  passwordHash   String
+  mobile         String?
+  mobileVerified Boolean              @default(false)
+  emailVerified  DateTime?
+  imageUrl       String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  auditLogs      AuditLog[]
+  ownedCompanies Company[]            @relation("CompanyOwner")
+  memberships    CompanyMember[]
+  resetTokens    PasswordResetToken[]
+
+  @@index([email])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// The tenant. Everything below belongs to exactly one Company.
+model Company {
+  id                String            @id @default(cuid())
+  name              String
+  ownerId           String
+  /// Drives the "Last Sale Created" line on the Company List (ref-12).
+  lastActivityAt    DateTime?
+  /// Financial year start month, 1-12. India defaults to April.
+  fyStartMonth      Int               @default(4)
+  isGstEnabled      Boolean           @default(true)
+  isMultiFirm       Boolean           @default(false)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  deletedAt         DateTime?
+  attachments       Attachment[]
+  auditLogs         AuditLog[]
+  bankAccounts      BankAccount[]
+  cheques           Cheque[]
+  owner             User              @relation("CompanyOwner", fields: [ownerId], references: [id])
+  members           CompanyMember[]
+  expenseCategories ExpenseCategory[]
+  firms             Firm[]
+  items             Item[]
+  itemCategories    ItemCategory[]
+  ledgerEntries     LedgerEntry[]
+  loanAccounts      LoanAccount[]
+  numberSequences   NumberSequence[]
+  parties           Party[]
+  partyGroups       PartyGroup[]
+  settings          Settings?
+  stockMovements    StockMovement[]
+  taxRates          TaxRate[]
+  transactions      Transaction[]
+  units             Unit[]
+
+  @@index([ownerId])
+  @@index([deletedAt])
+}
+
+model CompanyMember {
+  id         String    @id @default(cuid())
+  userId     String
+  companyId  String
+  role       Role      @default(OWNER)
+  invitedAt  DateTime  @default(now())
+  acceptedAt DateTime?
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId])
+  @@index([companyId])
+}
+
+/// A business entity inside a Company: its own GSTIN, logo and invoice series.
+model Firm {
+  id                 String           @id @default(cuid())
+  companyId          String
+  name               String
+  nameNormalized     String
+  gstin              String?
+  stateCode          String           @default("32")
+  addressLine1       String?
+  addressLine2       String?
+  city               String?
+  pincode            String?
+  phone              String?
+  email              String?
+  logoUrl            String?
+  signatureUrl       String?
+  bankName           String?
+  bankAccountNo      String?
+  bankIfsc           String?
+  upiId              String?
+  termsAndConditions String?
+  isDefault          Boolean          @default(false)
+  isActive           Boolean          @default(true)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  deletedAt          DateTime?
+  company            Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  numberSequences    NumberSequence[]
+  transactions       Transaction[]
+
+  @@unique([companyId, nameNormalized])
+  @@index([companyId, deletedAt])
+}
+
+/// One row per company; each column is a Zod-validated JSON blob per settings tab.
+model Settings {
+  id          String   @id @default(cuid())
+  companyId   String   @unique
+  general     Json     @default("{}")
+  transaction Json     @default("{}")
+  print       Json     @default("{}")
+  tax         Json     @default("{}")
+  party       Json     @default("{}")
+  item        Json     @default("{}")
+  message     Json     @default("{}")
+  updatedAt   DateTime @updatedAt
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+}
+
+model PartyGroup {
+  id        String    @id @default(cuid())
+  companyId String
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  parties   Party[]
+  company   Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, name])
+  @@index([companyId, deletedAt])
+}
+
+model Party {
+  id                 String        @id @default(cuid())
+  companyId          String
+  name               String
+  nameNormalized     String
+  type               PartyType     @default(CUSTOMER)
+  gstType            GstType       @default(UNREGISTERED)
+  gstin              String?
+  stateCode          String?
+  phone              String?
+  email              String?
+  billingAddress     String?
+  shippingAddress    String?
+  partyGroupId       String?
+  openingBalance     Decimal       @default(0) @db.Decimal(14, 2)
+  openingBalanceType BalanceType   @default(TO_RECEIVE)
+  openingAsOf        DateTime?
+  creditLimit        Decimal?      @db.Decimal(14, 2)
+  paymentTermDays    Int?
+  customFields       Json          @default("{}")
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  deletedAt          DateTime?
+  createdById        String?
+  cheques            Cheque[]
+  ledgerEntries      LedgerEntry[]
+  company            Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  partyGroup         PartyGroup?   @relation(fields: [partyGroupId], references: [id])
+  transactions       Transaction[]
+
+  @@unique([companyId, nameNormalized])
+  @@index([companyId, deletedAt])
+  @@index([companyId, type])
+  @@index([partyGroupId])
+}
+
+model Unit {
+  id             String            @id @default(cuid())
+  companyId      String
+  name           String
+  shortName      String
+  createdAt      DateTime          @default(now())
+  deletedAt      DateTime?
+  itemsSecondary Item[]            @relation("SecondaryUnit")
+  itemsPrimary   Item[]            @relation("PrimaryUnit")
+  lines          TransactionLine[]
+  company        Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, shortName])
+  @@index([companyId, deletedAt])
+}
+
+model ItemCategory {
+  id        String               @id @default(cuid())
+  companyId String
+  name      String
+  createdAt DateTime             @default(now())
+  deletedAt DateTime?
+  company   Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  items     ItemCategoryOnItem[]
+
+  @@unique([companyId, name])
+  @@index([companyId, deletedAt])
+}
+
+model TaxRate {
+  id         String            @id @default(cuid())
+  companyId  String
+  name       String
+  rate       Decimal           @db.Decimal(6, 3)
+  cessRate   Decimal           @default(0) @db.Decimal(6, 3)
+  isExempt   Boolean           @default(false)
+  isNilRated Boolean           @default(false)
+  isSystem   Boolean           @default(true)
+  sortOrder  Int               @default(0)
+  deletedAt  DateTime?
+  items      Item[]
+  company    Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  lines      TransactionLine[]
+
+  @@unique([companyId, name])
+  @@index([companyId, deletedAt])
+}
+
+model Item {
+  id                        String               @id @default(cuid())
+  companyId                 String
+  name                      String
+  nameNormalized            String
+  type                      ItemType             @default(PRODUCT)
+  sku                       String?
+  hsnSac                    String?
+  description               String?
+  imageUrl                  String?
+  unitId                    String?
+  secondaryUnitId           String?
+  conversionFactor          Decimal?             @db.Decimal(14, 3)
+  salePrice                 Decimal              @default(0) @db.Decimal(14, 2)
+  salePriceTaxInclusive     Boolean              @default(false)
+  purchasePrice             Decimal              @default(0) @db.Decimal(14, 2)
+  purchasePriceTaxInclusive Boolean              @default(false)
+  wholesalePrice            Decimal?             @db.Decimal(14, 2)
+  wholesaleMinQty           Decimal?             @db.Decimal(14, 3)
+  taxRateId                 String?
+  openingQty                Decimal              @default(0) @db.Decimal(14, 3)
+  openingRate               Decimal              @default(0) @db.Decimal(14, 2)
+  openingAsOf               DateTime?
+  minStockQty               Decimal              @default(0) @db.Decimal(14, 3)
+  location                  String?
+  customFields              Json                 @default("{}")
+  isActive                  Boolean              @default(true)
+  createdAt                 DateTime             @default(now())
+  updatedAt                 DateTime             @updatedAt
+  deletedAt                 DateTime?
+  createdById               String?
+  company                   Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  secondaryUnit             Unit?                @relation("SecondaryUnit", fields: [secondaryUnitId], references: [id])
+  taxRate                   TaxRate?             @relation(fields: [taxRateId], references: [id])
+  unit                      Unit?                @relation("PrimaryUnit", fields: [unitId], references: [id])
+  categories                ItemCategoryOnItem[]
+  stockMovements            StockMovement[]
+  lines                     TransactionLine[]
+
+  @@unique([companyId, nameNormalized])
+  @@index([companyId, deletedAt])
+  @@index([companyId, type])
+  @@index([companyId, sku])
+}
+
+model ItemCategoryOnItem {
+  itemId     String
+  categoryId String
+  category   ItemCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  item       Item         @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@id([itemId, categoryId])
+  @@index([categoryId])
+}
+
+model ExpenseCategory {
+  id            String        @id @default(cuid())
+  companyId     String
+  name          String
+  expenseType   ExpenseType   @default(INDIRECT)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
+  company       Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  ledgerEntries LedgerEntry[]
+  transactions  Transaction[]
+
+  @@unique([companyId, name])
+  @@index([companyId, deletedAt])
+}
+
+model Transaction {
+  id                   String              @id @default(cuid())
+  companyId            String
+  firmId               String
+  type                 TransactionType
+  number               String
+  numberPrefix         String              @default("")
+  financialYear        String
+  date                 DateTime
+  dueDate              DateTime?
+  partyId              String?
+  expenseCategoryId    String?
+  bankAccountId        String?
+  toBankAccountId      String?
+  /// Two-letter state code of the place of supply.
+  stateOfSupply        String?
+  isIgst               Boolean             @default(false)
+  subTotal             Decimal             @default(0) @db.Decimal(14, 2)
+  discountValue        Decimal             @default(0) @db.Decimal(14, 2)
+  discountIsPercent    Boolean             @default(false)
+  discountAmount       Decimal             @default(0) @db.Decimal(14, 2)
+  additionalCharges    Json                @default("[]")
+  taxableValue         Decimal             @default(0) @db.Decimal(14, 2)
+  cgst                 Decimal             @default(0) @db.Decimal(14, 2)
+  sgst                 Decimal             @default(0) @db.Decimal(14, 2)
+  igst                 Decimal             @default(0) @db.Decimal(14, 2)
+  cess                 Decimal             @default(0) @db.Decimal(14, 2)
+  tcs                  Decimal             @default(0) @db.Decimal(14, 2)
+  roundOff             Decimal             @default(0) @db.Decimal(14, 2)
+  total                Decimal             @default(0) @db.Decimal(14, 2)
+  paidAmount           Decimal             @default(0) @db.Decimal(14, 2)
+  balanceAmount        Decimal             @default(0) @db.Decimal(14, 2)
+  paymentMode          PaymentMode?
+  chequeNo             String?
+  notes                String?
+  terms                String?
+  status               TransactionStatus   @default(OPEN)
+  convertedFromId      String?             @unique
+  convertedToId        String?             @unique
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  deletedAt            DateTime?
+  createdById          String?
+  attachments          Attachment[]
+  cheque               Cheque?
+  ledgerEntries        LedgerEntry[]
+  allocationsAsInvoice PaymentAllocation[] @relation("InvoiceSide")
+  allocationsAsPayment PaymentAllocation[] @relation("PaymentSide")
+  stockMovements       StockMovement[]
+  bankAccount          BankAccount?        @relation("TxnBank", fields: [bankAccountId], references: [id], onDelete: Restrict)
+  company              Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  convertedFrom        Transaction?        @relation("Conversion", fields: [convertedFromId], references: [id])
+  convertedTo          Transaction?        @relation("Conversion")
+  expenseCategory      ExpenseCategory?    @relation(fields: [expenseCategoryId], references: [id], onDelete: Restrict)
+  firm                 Firm                @relation(fields: [firmId], references: [id])
+  party                Party?              @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  toBankAccount        BankAccount?        @relation("TxnToBank", fields: [toBankAccountId], references: [id], onDelete: Restrict)
+  lines                TransactionLine[]
+  taxes                TransactionTax[]
+
+  @@unique([firmId, type, financialYear, number])
+  @@index([companyId, deletedAt])
+  @@index([companyId, firmId, type, date])
+  @@index([companyId, partyId, date])
+  @@index([companyId, type, status])
+}
+
+model TransactionLine {
+  id                 String      @id @default(cuid())
+  companyId          String
+  transactionId      String
+  itemId             String?
+  description        String?
+  hsnSac             String?
+  qty                Decimal     @db.Decimal(14, 3)
+  freeQty            Decimal     @default(0) @db.Decimal(14, 3)
+  unitId             String?
+  rate               Decimal     @db.Decimal(14, 2)
+  rateIsTaxInclusive Boolean     @default(false)
+  discountValue      Decimal     @default(0) @db.Decimal(14, 2)
+  discountIsPercent  Boolean     @default(false)
+  discountAmount     Decimal     @default(0) @db.Decimal(14, 2)
+  taxRateId          String?
+  taxRateValue       Decimal     @default(0) @db.Decimal(6, 3)
+  cessRate           Decimal     @default(0) @db.Decimal(6, 3)
+  taxableValue       Decimal     @default(0) @db.Decimal(14, 2)
+  cgst               Decimal     @default(0) @db.Decimal(14, 2)
+  sgst               Decimal     @default(0) @db.Decimal(14, 2)
+  igst               Decimal     @default(0) @db.Decimal(14, 2)
+  cessAmount         Decimal     @default(0) @db.Decimal(14, 2)
+  amount             Decimal     @default(0) @db.Decimal(14, 2)
+  sortOrder          Int         @default(0)
+  item               Item?       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  taxRate            TaxRate?    @relation(fields: [taxRateId], references: [id])
+  transaction        Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  unit               Unit?       @relation(fields: [unitId], references: [id])
+
+  @@index([transactionId])
+  @@index([companyId, itemId])
+}
+
+/// Per-transaction tax breakup: the source of the HSN summary and the GST reports.
+model TransactionTax {
+  id            String      @id @default(cuid())
+  companyId     String
+  transactionId String
+  hsnSac        String?
+  rate          Decimal     @db.Decimal(6, 3)
+  cessRate      Decimal     @default(0) @db.Decimal(6, 3)
+  taxableValue  Decimal     @db.Decimal(14, 2)
+  cgst          Decimal     @default(0) @db.Decimal(14, 2)
+  sgst          Decimal     @default(0) @db.Decimal(14, 2)
+  igst          Decimal     @default(0) @db.Decimal(14, 2)
+  cessAmount    Decimal     @default(0) @db.Decimal(14, 2)
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+  @@index([companyId, rate])
+}
+
+model PaymentAllocation {
+  id                   String      @id @default(cuid())
+  companyId            String
+  paymentTransactionId String
+  invoiceTransactionId String
+  amount               Decimal     @db.Decimal(14, 2)
+  invoice              Transaction @relation("InvoiceSide", fields: [invoiceTransactionId], references: [id], onDelete: Cascade)
+  payment              Transaction @relation("PaymentSide", fields: [paymentTransactionId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentTransactionId, invoiceTransactionId])
+  @@index([invoiceTransactionId])
+  @@index([companyId])
+}
+
+model StockMovement {
+  id            String       @id @default(cuid())
+  companyId     String
+  itemId        String
+  transactionId String?
+  /// Reserved for a future multi-godown module (D-19). Always null today.
+  godownId      String?
+  date          DateTime
+  qtyIn         Decimal      @default(0) @db.Decimal(14, 3)
+  qtyOut        Decimal      @default(0) @db.Decimal(14, 3)
+  rate          Decimal      @default(0) @db.Decimal(14, 2)
+  reason        StockReason
+  note          String?
+  createdAt     DateTime     @default(now())
+  company       Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  item          Item         @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  transaction   Transaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, itemId, date])
+  @@index([transactionId])
+}
+
+model LedgerEntry {
+  id                String            @id @default(cuid())
+  companyId         String
+  transactionId     String?
+  accountType       LedgerAccountType
+  partyId           String?
+  bankAccountId     String?
+  expenseCategoryId String?
+  /// Key for system accounts with no row of their own, e.g. CGST_OUTPUT.
+  accountKey        String?
+  date              DateTime
+  debit             Decimal           @default(0) @db.Decimal(14, 2)
+  credit            Decimal           @default(0) @db.Decimal(14, 2)
+  narration         String?
+  createdAt         DateTime          @default(now())
+  bankAccount       BankAccount?      @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+  company           Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  expenseCategory   ExpenseCategory?  @relation(fields: [expenseCategoryId], references: [id], onDelete: Cascade)
+  party             Party?            @relation(fields: [partyId], references: [id], onDelete: Cascade)
+  transaction       Transaction?      @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, partyId, date])
+  @@index([companyId, accountType, date])
+  @@index([companyId, bankAccountId, date])
+  @@index([transactionId])
+}
+
+model BankAccount {
+  id             String        @id @default(cuid())
+  companyId      String
+  displayName    String
+  accountNumber  String?
+  ifsc           String?
+  bankName       String?
+  upiId          String?
+  openingBalance Decimal       @default(0) @db.Decimal(14, 2)
+  openingAsOf    DateTime?
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  deletedAt      DateTime?
+  company        Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  cheques        Cheque[]
+  ledgerEntries  LedgerEntry[]
+  txnsFrom       Transaction[] @relation("TxnBank")
+  txnsTo         Transaction[] @relation("TxnToBank")
+
+  @@unique([companyId, displayName])
+  @@index([companyId, deletedAt])
+}
+
+model Cheque {
+  id            String       @id @default(cuid())
+  companyId     String
+  transactionId String       @unique
+  partyId       String?
+  bankAccountId String?
+  chequeNumber  String?
+  amount        Decimal      @db.Decimal(14, 2)
+  dueDate       DateTime?
+  status        ChequeStatus @default(OPEN)
+  closedOn      DateTime?
+  note          String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  bankAccount   BankAccount? @relation(fields: [bankAccountId], references: [id])
+  company       Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  party         Party?       @relation(fields: [partyId], references: [id])
+  transaction   Transaction  @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, status])
+}
+
+model LoanAccount {
+  id             String            @id @default(cuid())
+  companyId      String
+  lenderName     String
+  accountNumber  String?
+  openingBalance Decimal           @default(0) @db.Decimal(14, 2)
+  openingAsOf    DateTime?
+  interestRate   Decimal?          @db.Decimal(6, 3)
+  termMonths     Int?
+  description    String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  deletedAt      DateTime?
+  company        Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  transactions   LoanTransaction[]
+
+  @@unique([companyId, lenderName])
+  @@index([companyId, deletedAt])
+}
+
+model LoanTransaction {
+  id            String      @id @default(cuid())
+  companyId     String
+  loanAccountId String
+  date          DateTime
+  principal     Decimal     @default(0) @db.Decimal(14, 2)
+  interest      Decimal     @default(0) @db.Decimal(14, 2)
+  charges       Decimal     @default(0) @db.Decimal(14, 2)
+  note          String?
+  createdAt     DateTime    @default(now())
+  loanAccount   LoanAccount @relation(fields: [loanAccountId], references: [id], onDelete: Cascade)
+
+  @@index([loanAccountId, date])
+}
+
+/// Per firm, per type, per FY. Prefix may legitimately be empty (D-09).
+model NumberSequence {
+  id            String          @id @default(cuid())
+  companyId     String
+  firmId        String
+  type          TransactionType
+  financialYear String
+  prefix        String          @default("")
+  nextNumber    Int             @default(1)
+  resetYearly   Boolean         @default(true)
+  updatedAt     DateTime        @updatedAt
+  company       Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  firm          Firm            @relation(fields: [firmId], references: [id], onDelete: Cascade)
+
+  @@unique([firmId, type, financialYear])
+  @@index([companyId])
+}
+
+model Attachment {
+  id            String       @id @default(cuid())
+  companyId     String
+  transactionId String?
+  fileName      String
+  mimeType      String
+  size          Int
+  storageKey    String
+  createdAt     DateTime     @default(now())
+  company       Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  transaction   Transaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([transactionId])
+}
+
+model AuditLog {
+  id        String      @id @default(cuid())
+  companyId String
+  firmId    String?
+  userId    String?
+  entity    String
+  entityId  String
+  action    AuditAction
+  before    Json?
+  after     Json?
+  at        DateTime    @default(now())
+  company   Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user      User?       @relation(fields: [userId], references: [id])
+
+  @@index([companyId, at])
+  @@index([companyId, entity, entityId])
+}
 
 enum Role {
   OWNER
@@ -127,707 +738,4 @@ enum AuditAction {
   UPDATE
   DELETE
   RESTORE
-}
-
-// ---------------------------------------------------------------------------
-// Identity & tenancy
-// ---------------------------------------------------------------------------
-
-model User {
-  id             String   @id @default(cuid())
-  name           String
-  email          String   @unique
-  passwordHash   String
-  mobile         String?
-  mobileVerified Boolean  @default(false)
-  emailVerified  DateTime?
-  imageUrl       String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  memberships    CompanyMember[]
-  ownedCompanies Company[]           @relation("CompanyOwner")
-  resetTokens    PasswordResetToken[]
-  auditLogs      AuditLog[]
-
-  @@index([email])
-}
-
-model PasswordResetToken {
-  id        String   @id @default(cuid())
-  userId    String
-  token     String   @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-}
-
-/// The tenant. Everything below belongs to exactly one Company.
-model Company {
-  id             String   @id @default(cuid())
-  name           String
-  ownerId        String
-  /// Drives the "Last Sale Created" line on the Company List (ref-12).
-  lastActivityAt DateTime?
-  /// Financial year start month, 1-12. India defaults to April.
-  fyStartMonth   Int      @default(4)
-  isGstEnabled   Boolean  @default(true)
-  isMultiFirm    Boolean  @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  deletedAt      DateTime?
-
-  owner    User            @relation("CompanyOwner", fields: [ownerId], references: [id])
-  members  CompanyMember[]
-  firms    Firm[]
-  settings Settings?
-
-  partyGroups       PartyGroup[]
-  parties           Party[]
-  units             Unit[]
-  itemCategories    ItemCategory[]
-  items             Item[]
-  taxRates          TaxRate[]
-  transactions      Transaction[]
-  stockMovements    StockMovement[]
-  ledgerEntries     LedgerEntry[]
-  bankAccounts      BankAccount[]
-  cheques           Cheque[]
-  loanAccounts      LoanAccount[]
-  expenseCategories ExpenseCategory[]
-  numberSequences   NumberSequence[]
-  attachments       Attachment[]
-  auditLogs         AuditLog[]
-
-  @@index([ownerId])
-  @@index([deletedAt])
-}
-
-model CompanyMember {
-  id         String    @id @default(cuid())
-  userId     String
-  companyId  String
-  role       Role      @default(OWNER)
-  invitedAt  DateTime  @default(now())
-  acceptedAt DateTime?
-
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, companyId])
-  @@index([companyId])
-}
-
-/// A business entity inside a Company: its own GSTIN, logo and invoice series.
-model Firm {
-  id             String  @id @default(cuid())
-  companyId      String
-  name           String
-  nameNormalized String
-  gstin          String?
-  stateCode      String  @default("32")
-  addressLine1   String?
-  addressLine2   String?
-  city           String?
-  pincode        String?
-  phone          String?
-  email          String?
-  logoUrl        String?
-  signatureUrl   String?
-  bankName       String?
-  bankAccountNo  String?
-  bankIfsc       String?
-  upiId          String?
-  termsAndConditions String?
-  isDefault      Boolean @default(false)
-  isActive       Boolean @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  deletedAt      DateTime?
-
-  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  transactions    Transaction[]
-  numberSequences NumberSequence[]
-
-  @@unique([companyId, nameNormalized])
-  @@index([companyId, deletedAt])
-}
-
-/// One row per company; each column is a Zod-validated JSON blob per settings tab.
-model Settings {
-  id          String   @id @default(cuid())
-  companyId   String   @unique
-  general     Json     @default("{}")
-  transaction Json     @default("{}")
-  print       Json     @default("{}")
-  tax         Json     @default("{}")
-  party       Json     @default("{}")
-  item        Json     @default("{}")
-  message     Json     @default("{}")
-  updatedAt   DateTime @updatedAt
-
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-}
-
-// ---------------------------------------------------------------------------
-// Masters — company-level, shared across every firm (see D-20)
-// ---------------------------------------------------------------------------
-
-model PartyGroup {
-  id        String   @id @default(cuid())
-  companyId String
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  deletedAt DateTime?
-
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  parties Party[]
-
-  @@unique([companyId, name])
-  @@index([companyId, deletedAt])
-}
-
-model Party {
-  id             String  @id @default(cuid())
-  companyId      String
-  name           String
-  nameNormalized String
-  type           PartyType @default(CUSTOMER)
-  gstType        GstType   @default(UNREGISTERED)
-  gstin          String?
-  stateCode      String?
-  phone          String?
-  email          String?
-
-  billingAddress  String?
-  shippingAddress String?
-
-  partyGroupId String?
-
-  openingBalance     Decimal     @default(0) @db.Decimal(14, 2)
-  openingBalanceType BalanceType @default(TO_RECEIVE)
-  openingAsOf        DateTime?
-
-  creditLimit     Decimal? @db.Decimal(14, 2)
-  paymentTermDays Int?
-
-  customFields Json @default("{}")
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  deletedAt   DateTime?
-  createdById String?
-
-  company       Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  partyGroup    PartyGroup?   @relation(fields: [partyGroupId], references: [id], onDelete: SetNull)
-  transactions  Transaction[]
-  ledgerEntries LedgerEntry[]
-  cheques       Cheque[]
-
-  @@unique([companyId, nameNormalized])
-  @@index([companyId, deletedAt])
-  @@index([companyId, type])
-  @@index([partyGroupId])
-}
-
-model Unit {
-  id        String   @id @default(cuid())
-  companyId String
-  name      String
-  shortName String
-  createdAt DateTime @default(now())
-  deletedAt DateTime?
-
-  company        Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  itemsPrimary   Item[]            @relation("PrimaryUnit")
-  itemsSecondary Item[]            @relation("SecondaryUnit")
-  lines          TransactionLine[]
-
-  @@unique([companyId, shortName])
-  @@index([companyId, deletedAt])
-}
-
-model ItemCategory {
-  id        String   @id @default(cuid())
-  companyId String
-  name      String
-  createdAt DateTime @default(now())
-  deletedAt DateTime?
-
-  company Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  items   ItemCategoryOnItem[]
-
-  @@unique([companyId, name])
-  @@index([companyId, deletedAt])
-}
-
-model TaxRate {
-  id          String  @id @default(cuid())
-  companyId   String
-  name        String
-  rate        Decimal @db.Decimal(6, 3)
-  cessRate    Decimal @default(0) @db.Decimal(6, 3)
-  isExempt    Boolean @default(false)
-  isNilRated  Boolean @default(false)
-  isSystem    Boolean @default(true)
-  sortOrder   Int     @default(0)
-  deletedAt   DateTime?
-
-  company Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  items   Item[]
-  lines   TransactionLine[]
-
-  @@unique([companyId, name])
-  @@index([companyId, deletedAt])
-}
-
-model Item {
-  id             String   @id @default(cuid())
-  companyId      String
-  name           String
-  nameNormalized String
-  type           ItemType @default(PRODUCT)
-  sku            String?
-  hsnSac         String?
-  description    String?
-  imageUrl       String?
-
-  unitId            String?
-  secondaryUnitId   String?
-  conversionFactor  Decimal? @db.Decimal(14, 3)
-
-  salePrice                 Decimal @default(0) @db.Decimal(14, 2)
-  salePriceTaxInclusive     Boolean @default(false)
-  purchasePrice             Decimal @default(0) @db.Decimal(14, 2)
-  purchasePriceTaxInclusive Boolean @default(false)
-  wholesalePrice            Decimal? @db.Decimal(14, 2)
-  wholesaleMinQty           Decimal? @db.Decimal(14, 3)
-
-  taxRateId String?
-
-  openingQty  Decimal  @default(0) @db.Decimal(14, 3)
-  openingRate Decimal  @default(0) @db.Decimal(14, 2)
-  openingAsOf DateTime?
-  minStockQty Decimal  @default(0) @db.Decimal(14, 3)
-  location    String?
-
-  customFields Json    @default("{}")
-  isActive     Boolean @default(true)
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  deletedAt   DateTime?
-  createdById String?
-
-  company       Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  unit          Unit?                @relation("PrimaryUnit", fields: [unitId], references: [id], onDelete: SetNull)
-  secondaryUnit Unit?                @relation("SecondaryUnit", fields: [secondaryUnitId], references: [id], onDelete: SetNull)
-  taxRate       TaxRate?             @relation(fields: [taxRateId], references: [id], onDelete: SetNull)
-  categories    ItemCategoryOnItem[]
-  lines         TransactionLine[]
-  stockMovements StockMovement[]
-
-  @@unique([companyId, nameNormalized])
-  @@index([companyId, deletedAt])
-  @@index([companyId, type])
-  @@index([companyId, sku])
-}
-
-model ItemCategoryOnItem {
-  itemId     String
-  categoryId String
-
-  item     Item         @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  category ItemCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
-
-  @@id([itemId, categoryId])
-  @@index([categoryId])
-}
-
-model ExpenseCategory {
-  id          String      @id @default(cuid())
-  companyId   String
-  name        String
-  expenseType ExpenseType @default(INDIRECT)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  deletedAt   DateTime?
-
-  company       Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  transactions  Transaction[]
-  ledgerEntries LedgerEntry[]
-
-  @@unique([companyId, name])
-  @@index([companyId, deletedAt])
-}
-
-// ---------------------------------------------------------------------------
-// Transactions — firm-tagged
-// ---------------------------------------------------------------------------
-
-model Transaction {
-  id        String          @id @default(cuid())
-  companyId String
-  firmId    String
-  type      TransactionType
-
-  number        String
-  numberPrefix  String  @default("")
-  financialYear String
-
-  date    DateTime
-  dueDate DateTime?
-
-  partyId           String?
-  expenseCategoryId String?
-  bankAccountId     String?
-  toBankAccountId   String?
-
-  /// Two-letter state code of the place of supply.
-  stateOfSupply String?
-  isIgst        Boolean @default(false)
-
-  subTotal          Decimal @default(0) @db.Decimal(14, 2)
-  discountValue     Decimal @default(0) @db.Decimal(14, 2)
-  discountIsPercent Boolean @default(false)
-  discountAmount    Decimal @default(0) @db.Decimal(14, 2)
-  additionalCharges Json    @default("[]")
-  taxableValue      Decimal @default(0) @db.Decimal(14, 2)
-  cgst              Decimal @default(0) @db.Decimal(14, 2)
-  sgst              Decimal @default(0) @db.Decimal(14, 2)
-  igst              Decimal @default(0) @db.Decimal(14, 2)
-  cess              Decimal @default(0) @db.Decimal(14, 2)
-  tcs               Decimal @default(0) @db.Decimal(14, 2)
-  roundOff          Decimal @default(0) @db.Decimal(14, 2)
-  total             Decimal @default(0) @db.Decimal(14, 2)
-  paidAmount        Decimal @default(0) @db.Decimal(14, 2)
-  balanceAmount     Decimal @default(0) @db.Decimal(14, 2)
-
-  paymentMode PaymentMode?
-  chequeNo    String?
-
-  notes  String?
-  terms  String?
-  status TransactionStatus @default(OPEN)
-
-  convertedFromId String?      @unique
-  convertedToId   String?      @unique
-
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  deletedAt   DateTime?
-  createdById String?
-
-  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  firm            Firm             @relation(fields: [firmId], references: [id], onDelete: Restrict)
-  party           Party?           @relation(fields: [partyId], references: [id], onDelete: Restrict)
-  expenseCategory ExpenseCategory? @relation(fields: [expenseCategoryId], references: [id], onDelete: Restrict)
-  bankAccount     BankAccount?     @relation("TxnBank", fields: [bankAccountId], references: [id], onDelete: Restrict)
-  toBankAccount   BankAccount?     @relation("TxnToBank", fields: [toBankAccountId], references: [id], onDelete: Restrict)
-
-  convertedFrom Transaction? @relation("Conversion", fields: [convertedFromId], references: [id], onDelete: SetNull)
-  convertedTo   Transaction? @relation("Conversion")
-
-  lines           TransactionLine[]
-  taxes           TransactionTax[]
-  stockMovements  StockMovement[]
-  ledgerEntries   LedgerEntry[]
-  attachments     Attachment[]
-  cheque          Cheque?
-
-  allocationsAsPayment PaymentAllocation[] @relation("PaymentSide")
-  allocationsAsInvoice PaymentAllocation[] @relation("InvoiceSide")
-
-  @@unique([firmId, type, financialYear, number])
-  @@index([companyId, deletedAt])
-  @@index([companyId, firmId, type, date])
-  @@index([companyId, partyId, date])
-  @@index([companyId, type, status])
-}
-
-model TransactionLine {
-  id            String @id @default(cuid())
-  companyId     String
-  transactionId String
-
-  itemId      String?
-  description String?
-  hsnSac      String?
-
-  qty     Decimal @db.Decimal(14, 3)
-  freeQty Decimal @default(0) @db.Decimal(14, 3)
-  unitId  String?
-
-  rate               Decimal @db.Decimal(14, 2)
-  rateIsTaxInclusive Boolean @default(false)
-
-  discountValue     Decimal @default(0) @db.Decimal(14, 2)
-  discountIsPercent Boolean @default(false)
-  discountAmount    Decimal @default(0) @db.Decimal(14, 2)
-
-  taxRateId    String?
-  taxRateValue Decimal @default(0) @db.Decimal(6, 3)
-  cessRate     Decimal @default(0) @db.Decimal(6, 3)
-
-  taxableValue Decimal @default(0) @db.Decimal(14, 2)
-  cgst         Decimal @default(0) @db.Decimal(14, 2)
-  sgst         Decimal @default(0) @db.Decimal(14, 2)
-  igst         Decimal @default(0) @db.Decimal(14, 2)
-  cessAmount   Decimal @default(0) @db.Decimal(14, 2)
-  amount       Decimal @default(0) @db.Decimal(14, 2)
-
-  sortOrder Int @default(0)
-
-  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-  item        Item?       @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  unit        Unit?       @relation(fields: [unitId], references: [id], onDelete: SetNull)
-  taxRate     TaxRate?    @relation(fields: [taxRateId], references: [id], onDelete: SetNull)
-
-  @@index([transactionId])
-  @@index([companyId, itemId])
-}
-
-/// Per-transaction tax breakup: the source of the HSN summary and the GST reports.
-model TransactionTax {
-  id            String  @id @default(cuid())
-  companyId     String
-  transactionId String
-  hsnSac        String?
-  rate          Decimal @db.Decimal(6, 3)
-  cessRate      Decimal @default(0) @db.Decimal(6, 3)
-  taxableValue  Decimal @db.Decimal(14, 2)
-  cgst          Decimal @default(0) @db.Decimal(14, 2)
-  sgst          Decimal @default(0) @db.Decimal(14, 2)
-  igst          Decimal @default(0) @db.Decimal(14, 2)
-  cessAmount    Decimal @default(0) @db.Decimal(14, 2)
-
-  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-
-  @@index([transactionId])
-  @@index([companyId, rate])
-}
-
-model PaymentAllocation {
-  id                   String  @id @default(cuid())
-  companyId            String
-  paymentTransactionId String
-  invoiceTransactionId String
-  amount               Decimal @db.Decimal(14, 2)
-
-  payment Transaction @relation("PaymentSide", fields: [paymentTransactionId], references: [id], onDelete: Cascade)
-  invoice Transaction @relation("InvoiceSide", fields: [invoiceTransactionId], references: [id], onDelete: Cascade)
-
-  @@unique([paymentTransactionId, invoiceTransactionId])
-  @@index([invoiceTransactionId])
-  @@index([companyId])
-}
-
-// ---------------------------------------------------------------------------
-// Derived ledgers — balances are SUMs over these, never stored counters (D-06)
-// ---------------------------------------------------------------------------
-
-model StockMovement {
-  id            String      @id @default(cuid())
-  companyId     String
-  itemId        String
-  transactionId String?
-  /// Reserved for a future multi-godown module (D-19). Always null today.
-  godownId      String?
-  date          DateTime
-  qtyIn         Decimal     @default(0) @db.Decimal(14, 3)
-  qtyOut        Decimal     @default(0) @db.Decimal(14, 3)
-  rate          Decimal     @default(0) @db.Decimal(14, 2)
-  reason        StockReason
-  note          String?
-  createdAt     DateTime    @default(now())
-
-  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  item        Item         @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-
-  @@index([companyId, itemId, date])
-  @@index([transactionId])
-}
-
-model LedgerEntry {
-  id            String            @id @default(cuid())
-  companyId     String
-  transactionId String?
-  accountType   LedgerAccountType
-
-  partyId           String?
-  bankAccountId     String?
-  expenseCategoryId String?
-  /// Key for system accounts with no row of their own, e.g. CGST_OUTPUT.
-  accountKey        String?
-
-  date      DateTime
-  debit     Decimal  @default(0) @db.Decimal(14, 2)
-  credit    Decimal  @default(0) @db.Decimal(14, 2)
-  narration String?
-  createdAt DateTime @default(now())
-
-  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  transaction     Transaction?     @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-  party           Party?           @relation(fields: [partyId], references: [id], onDelete: Cascade)
-  bankAccount     BankAccount?     @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
-  expenseCategory ExpenseCategory? @relation(fields: [expenseCategoryId], references: [id], onDelete: Cascade)
-
-  @@index([companyId, partyId, date])
-  @@index([companyId, accountType, date])
-  @@index([companyId, bankAccountId, date])
-  @@index([transactionId])
-}
-
-// ---------------------------------------------------------------------------
-// Cash & bank
-// ---------------------------------------------------------------------------
-
-model BankAccount {
-  id             String   @id @default(cuid())
-  companyId      String
-  displayName    String
-  accountNumber  String?
-  ifsc           String?
-  bankName       String?
-  upiId          String?
-  openingBalance Decimal  @default(0) @db.Decimal(14, 2)
-  openingAsOf    DateTime?
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  deletedAt      DateTime?
-
-  company          Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  ledgerEntries    LedgerEntry[]
-  txnsFrom         Transaction[] @relation("TxnBank")
-  txnsTo           Transaction[] @relation("TxnToBank")
-  cheques          Cheque[]
-
-  @@unique([companyId, displayName])
-  @@index([companyId, deletedAt])
-}
-
-model Cheque {
-  id            String       @id @default(cuid())
-  companyId     String
-  transactionId String       @unique
-  partyId       String?
-  bankAccountId String?
-  chequeNumber  String?
-  amount        Decimal      @db.Decimal(14, 2)
-  dueDate       DateTime?
-  status        ChequeStatus @default(OPEN)
-  closedOn      DateTime?
-  note          String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-
-  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  transaction Transaction  @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-  party       Party?       @relation(fields: [partyId], references: [id], onDelete: SetNull)
-  bankAccount BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
-
-  @@index([companyId, status])
-}
-
-model LoanAccount {
-  id             String   @id @default(cuid())
-  companyId      String
-  lenderName     String
-  accountNumber  String?
-  openingBalance Decimal  @default(0) @db.Decimal(14, 2)
-  openingAsOf    DateTime?
-  interestRate   Decimal? @db.Decimal(6, 3)
-  termMonths     Int?
-  description    String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  deletedAt      DateTime?
-
-  company      Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  transactions LoanTransaction[]
-
-  @@unique([companyId, lenderName])
-  @@index([companyId, deletedAt])
-}
-
-model LoanTransaction {
-  id            String   @id @default(cuid())
-  companyId     String
-  loanAccountId String
-  date          DateTime
-  principal     Decimal  @default(0) @db.Decimal(14, 2)
-  interest      Decimal  @default(0) @db.Decimal(14, 2)
-  charges       Decimal  @default(0) @db.Decimal(14, 2)
-  note          String?
-  createdAt     DateTime @default(now())
-
-  loanAccount LoanAccount @relation(fields: [loanAccountId], references: [id], onDelete: Cascade)
-
-  @@index([loanAccountId, date])
-}
-
-// ---------------------------------------------------------------------------
-// Infrastructure
-// ---------------------------------------------------------------------------
-
-/// Per firm, per type, per FY. Prefix may legitimately be empty (D-09).
-model NumberSequence {
-  id            String          @id @default(cuid())
-  companyId     String
-  firmId        String
-  type          TransactionType
-  financialYear String
-  prefix        String          @default("")
-  nextNumber    Int             @default(1)
-  resetYearly   Boolean         @default(true)
-  updatedAt     DateTime        @updatedAt
-
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  firm    Firm    @relation(fields: [firmId], references: [id], onDelete: Cascade)
-
-  @@unique([firmId, type, financialYear])
-  @@index([companyId])
-}
-
-model Attachment {
-  id            String   @id @default(cuid())
-  companyId     String
-  transactionId String?
-  fileName      String
-  mimeType      String
-  size          Int
-  storageKey    String
-  createdAt     DateTime @default(now())
-
-  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
-
-  @@index([companyId])
-  @@index([transactionId])
-}
-
-model AuditLog {
-  id        String      @id @default(cuid())
-  companyId String
-  firmId    String?
-  userId    String?
-  entity    String
-  entityId  String
-  action    AuditAction
-  before    Json?
-  after     Json?
-  at        DateTime    @default(now())
-
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
-
-  @@index([companyId, at])
-  @@index([companyId, entity, entityId])
 }
