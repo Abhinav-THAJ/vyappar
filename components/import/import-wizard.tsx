@@ -450,7 +450,17 @@ export function ImportWizard({
                     <FileSpreadsheet className="size-4" />
                     Import another file
                   </Button>
-                  <Button onClick={() => router.push(kind === "parties" ? "/parties" : "/items")}>
+                  <Button
+                    onClick={() =>
+                      router.push(
+                        kind === "parties"
+                          ? "/parties"
+                          : kind === "items"
+                            ? "/items"
+                            : "/sale/invoices",
+                      )
+                    }
+                  >
                     View {title.toLowerCase()}
                   </Button>
                 </div>

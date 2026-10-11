@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { SheetColumn } from "@/lib/xlsx";
+import { parseIndianDate } from "@/lib/format/date";
 
-export type ImportKind = "parties" | "items";
+export type ImportKind = "parties" | "items" | "transactions";
 
 export interface ImportField {
   key: string;
@@ -23,7 +24,7 @@ export const PARTY_IMPORT: ImportSpec = {
   kind: "parties",
   title: "Parties",
   fields: [
-    { key: "name", label: "Party name", required: true, aliases: ["name", "party", "party name", "customer", "customer name"], example: "Banerji Memorial Club" },
+    { key: "name", label: "Party name", required: true, aliases: ["name", "party", "party name", "customer", "customer name", "supplier name"], example: "Banerji Memorial Club" },
     { key: "type", label: "Type", hint: "CUSTOMER, SUPPLIER or BOTH", aliases: ["type", "party type"], example: "CUSTOMER" },
     { key: "phone", label: "Phone", aliases: ["phone", "mobile", "contact", "contact no"], example: "9847012345" },
     { key: "email", label: "Email", aliases: ["email", "e-mail"], example: "club@example.in" },
@@ -52,8 +53,30 @@ export const ITEM_IMPORT: ImportSpec = {
   ],
 };
 
+export const TRANSACTION_IMPORT: ImportSpec = {
+  kind: "transactions",
+  title: "Transactions",
+  fields: [
+    { key: "date", label: "Date", required: true, hint: "YYYY-MM-DD or DD/MM/YYYY", aliases: ["date", "txn date", "invoice date", "bill date"], example: "2024-03-15" },
+    { key: "type", label: "Type", required: true, hint: "SALE, PURCHASE, or EXPENSE", aliases: ["type", "txn type", "transaction type", "voucher type"], example: "SALE" },
+    { key: "number", label: "Invoice / Bill No", hint: "Optional invoice number", aliases: ["number", "invoice no", "inv no", "bill no", "voucher no"], example: "INV-1001" },
+    { key: "partyName", label: "Party name", aliases: ["party", "party name", "customer", "customer name", "supplier", "vendor"], example: "Banerji Memorial Club" },
+    { key: "itemName", label: "Item / Category", aliases: ["item", "item name", "product", "particulars", "category", "expense category"], example: "10x10 Tent" },
+    { key: "qty", label: "Quantity", aliases: ["qty", "quantity", "count"], example: "1" },
+    { key: "unit", label: "Unit", hint: "e.g. NOS, PCS, KG", aliases: ["unit", "uom"], example: "NOS" },
+    { key: "rate", label: "Rate / Price", required: true, aliases: ["rate", "price", "unit price", "amount"], example: "4500" },
+    { key: "taxRate", label: "GST rate %", hint: "0, 5, 12, 18 or 28", aliases: ["gst", "tax", "gst rate", "tax rate"], example: "18" },
+    { key: "discount", label: "Discount", aliases: ["discount", "disc", "discount amount"], example: "0" },
+    { key: "paidAmount", label: "Paid amount", hint: "Amount paid so far", aliases: ["paid", "paid amount", "received", "received amount"], example: "4500" },
+    { key: "paymentMode", label: "Payment mode", hint: "CASH, BANK, UPI, CHEQUE", aliases: ["mode", "payment mode", "payment type"], example: "CASH" },
+    { key: "notes", label: "Notes", aliases: ["notes", "narration", "description", "remarks"], example: "Migrated from previous software" },
+  ],
+};
+
 export function specFor(kind: ImportKind): ImportSpec {
-  return kind === "parties" ? PARTY_IMPORT : ITEM_IMPORT;
+  if (kind === "parties") return PARTY_IMPORT;
+  if (kind === "items") return ITEM_IMPORT;
+  return TRANSACTION_IMPORT;
 }
 
 export function templateColumns(spec: ImportSpec): SheetColumn[] {
@@ -62,6 +85,38 @@ export function templateColumns(spec: ImportSpec): SheetColumn[] {
 
 export function templateExample(spec: ImportSpec): Record<string, string> {
   return Object.fromEntries(spec.fields.map((f) => [f.key, f.example]));
+}
+
+/** Parse various date representations found in Excel spreadsheets. */
+export function parseExcelDate(val: string): Date | null {
+  if (!val || !val.trim()) return null;
+  const s = val.trim();
+  // Check if numeric serial (Excel date serial e.g. 45366)
+  if (/^\d{4,5}(\.\d+)?$/.test(s)) {
+    const serial = Number(s);
+    // Excel base date: Dec 30, 1899
+    const utcDays = serial - 25569;
+    const d = new Date(utcDays * 86400 * 1000);
+    if (!isNaN(d.getTime())) return d;
+  }
+  // Try ISO YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return d;
+  }
+  // Try DD/MM/YYYY or DD-MM-YYYY
+  const parts = s.split(/[\/\-]/);
+  if (parts.length === 3) {
+    const p0 = parts[0];
+    const p1 = parts[1];
+    const p2 = parts[2];
+    if (p0 && p1 && p2 && p0.length <= 2 && p1.length <= 2 && p2.length === 4) {
+      const d = parseIndianDate(`${p0.padStart(2, "0")}/${p1.padStart(2, "0")}/${p2}`);
+      if (d) return d;
+    }
+  }
+  const fallback = new Date(s);
+  return isNaN(fallback.getTime()) ? null : fallback;
 }
 
 /**
@@ -206,3 +261,40 @@ export const itemRowSchema = z.object({
 });
 
 export type ItemRow = z.output<typeof itemRowSchema>;
+
+export const transactionRowSchema = z.object({
+  date: z
+    .string()
+    .trim()
+    .min(1, "Date is required")
+    .refine((v) => parseExcelDate(v) !== null, "Invalid date (use YYYY-MM-DD or DD/MM/YYYY)"),
+  type: z
+    .string()
+    .trim()
+    .transform((v) => v.toUpperCase().replace(/\s+/g, "_"))
+    .refine(
+      (v) => ["SALE", "PURCHASE", "EXPENSE", "PAYMENT_IN", "PAYMENT_OUT"].includes(v),
+      "Type must be SALE, PURCHASE, EXPENSE, PAYMENT_IN, or PAYMENT_OUT",
+    ),
+  number: optional,
+  partyName: optional,
+  itemName: optional,
+  qty: numeric.refine((v) => Number(v) > 0, "Quantity must be greater than 0"),
+  unit: optional.transform((v) => v?.toUpperCase()),
+  rate: numeric,
+  taxRate: numeric.refine(
+    (v) => [0, 0.25, 3, 5, 12, 18, 28].includes(Number(v)),
+    "GST rate must be 0, 0.25, 3, 5, 12, 18 or 28",
+  ),
+  discount: numeric,
+  paidAmount: numeric,
+  paymentMode: optional
+    .transform((v) => (v ? v.toUpperCase() : "CASH"))
+    .refine(
+      (v) => ["CASH", "BANK", "UPI", "CARD", "CHEQUE", "NEFT", "OTHER"].includes(v),
+      "Invalid payment mode",
+    ),
+  notes: optional,
+});
+
+export type TransactionRow = z.output<typeof transactionRowSchema>;

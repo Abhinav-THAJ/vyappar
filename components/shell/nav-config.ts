@@ -155,6 +155,8 @@ export const NAV: NavGroup[] = [
     label: "Utilities",
     icon: Wrench,
     children: [
+      { label: "Migrate Old Software Data", href: "/utilities/migration", permission: "data.import" },
+      { label: "Import Transactions", href: "/utilities/import-transactions", permission: "data.import" },
       { label: "Import Items", href: "/utilities/import-items", permission: "data.import" },
       { label: "Import Parties", href: "/utilities/import-parties", permission: "data.import" },
       { label: "Export Items", href: "/utilities/export-items", permission: "data.export" },
